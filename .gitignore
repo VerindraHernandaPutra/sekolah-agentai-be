@@ -1,0 +1,31 @@
+# --- Python Specific ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+.env.local
+
+# --- System Files ---
+.DS_Store
+Thumbs.db
+
+# --- Data Files (Ignore CSV in ALL folders) ---
+*.csv
+*.xlsx
+*.xls
+*.json
+!sto.json  # Pengecualian: Jika sto.json adalah data statis konfigurasi, boleh di-keep (opsional)
+
+# --- Qdrant Storage (Database Lokal) ---
+qdrant_storage/
+snapshots/
+
+# --- IDE Settings ---
+.vscode/
+.idea/
+
+# --- Logs ---
+*.log

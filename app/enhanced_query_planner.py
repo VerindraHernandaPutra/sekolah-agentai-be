@@ -1,0 +1,326 @@
+# enhanced_query_planner.py
+import json
+import logging
+import re
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from config import Config
+from utils import (
+    normalize_query,
+    extract_location_entities,
+    extract_numbers_with_context,
+    extract_school_name,
+    extract_filters_from_query
+)
+from enhanced_llm_utils import EnhancedLLMClient
+
+@dataclass
+class QueryPlan:
+    """Structured query plan object"""
+    intent: str
+    routing: str  # 'structured', 'semantic', 'hybrid'
+    filters: Dict[str, Any]
+    text_query: Optional[str]
+    fields: List[str]
+    limit: int
+    sort: Optional[List[Dict[str, str]]]
+    confidence: float
+
+class EnhancedQueryPlanner:
+    """
+    Enhanced query planner that uses Hybrid LLM (Gemini/Ollama) to understand user intent.
+    """
+    
+    def __init__(self, llm_client=None):
+        # Jika llm_client belum ada, inisialisasi default (Gemini)
+        self.llm_client = llm_client or EnhancedLLMClient(provider="gemini")
+        self.cache = {}
+        self.logger = logging.getLogger(__name__)
+    
+    def plan_query(self, user_query: str) -> QueryPlan:
+        """
+        Main planning pipeline:
+        1. Check Cache
+        2. Get Info Check (Specific School Name) -> Fast Path
+        3. Strong Rule-Based Check (Regex Priority) -> Robust Path for Ollama
+        4. LLM Analysis (Deep understanding for ambiguous queries) -> Smart Path
+        5. Fallback Rule-Based -> Safety Net
+        """
+        cache_key = normalize_query(user_query)
+        if cache_key in self.cache:
+            self.logger.info("Using cached query plan")
+            return self.cache[cache_key]
+        
+        # 1. FAST PATH: Cek apakah ini pencarian nama sekolah spesifik?
+        # Jika user mengetik nama sekolah panjang, biasanya mereka ingin detail sekolah itu.
+        if self._detect_get_info_intent(user_query):
+            plan = self._create_get_info_plan(user_query)
+            self.cache[cache_key] = plan
+            return plan
+        
+        # 2. ROBUST PATH: Cek Regex DULUAN.
+        # Ini SANGAT PENTING untuk Ollama. Ollama (Phi-3) sering gagal menangkap filter numerik 
+        # (seperti "< 500 siswa"). Regex Python jauh lebih akurat untuk ini.
+        filters_regex = extract_filters_from_query(user_query)
+        
+        # Kriteria "Strong Filters": Jika ada filter numerik (pd/ptk) atau npsn, percayai Regex.
+        # Atau jika regex menemukan lebih dari 1 filter (misal: lokasi + status).
+        has_numeric = any(k in filters_regex for k in ['pd', 'ptk', 'jml_lab', 'npsn'])
+        is_strong_regex = has_numeric or len(filters_regex) >= 2
+        
+        if is_strong_regex:
+             self.logger.info(f"🎯 Strong Rule-based plan used (High Confidence): {filters_regex}")
+             plan = QueryPlan(
+                intent="search_school",
+                routing="structured",
+                filters=filters_regex,
+                text_query=user_query,
+                fields=Config.COMPREHENSIVE_FIELDS["search_school"],
+                limit=20,
+                sort=None,
+                confidence=0.9
+             )
+             self.cache[cache_key] = plan
+             return plan
+
+        # 3. SMART PATH: Coba gunakan LLM untuk analisis mendalam
+        # Gunakan LLM hanya jika query ambigu (tidak tertangkap regex dengan kuat)
+        if self.llm_client and self.llm_client.check_connection():
+            try:
+                self.logger.info("Attempting LLM-based query planning...")
+                plan = self._create_llm_plan(user_query)
+                
+                # Validasi hasil LLM: Jika confidence tinggi, gunakan.
+                if plan and plan.confidence > 0.6:
+                    self.logger.info(f"LLM Plan Created: {plan.intent} | Filters: {len(plan.filters)}")
+                    self.cache[cache_key] = plan
+                    return plan
+                else:
+                    self.logger.warning("LLM plan creation failed or low confidence. Falling back to rules.")
+            except Exception as e:
+                self.logger.error(f"LLM planning failed: {e}")
+        
+        # 4. SAFETY NET: Fallback ke Rule-Based (apapun yang didapat)
+        self.logger.info("Falling back to rule-based planning")
+        plan = self._create_rule_based_plan(user_query)
+        self.cache[cache_key] = plan
+        return plan
+
+    def _detect_get_info_intent(self, query: str) -> bool:
+        """Detect if user wants details about a specific school"""
+        query_lower = query.lower()
+        
+        # 1. Cek kata kunci filter/pencarian (Jika ada, BUKAN get_info)
+        # Jika ada kata "kurang dari", "lebih dari", "yang memiliki", itu pasti search
+        search_indicators = ["kurang dari", "lebih dari", "yang punya", "yang memiliki", "dengan akreditasi", "cari sekolah"]
+        if any(ind in query_lower for ind in search_indicators):
+            return False
+
+        # 2. Keywords check (e.g., "profil sman 1")
+        if any(p in query_lower for p in Config.QUERY_INTENTS["get_info"]):
+            return True
+        
+        # 3. Specific school name check 
+        school_name = extract_school_name(query)
+        # Nama sekolah valid biasanya tidak sepanjang query itu sendiri (kecuali query sangat pendek)
+        if school_name and len(school_name) > 5:
+            # Jika panjang nama sekolah > 80% panjang query, mungkin itu memang nama sekolah
+            # Tapi jika query panjang dan nama sekolah yang terdeteksi juga panjang banget, curigai itu kalimat
+            if len(query.split()) > 6: # Jika lebih dari 6 kata, jarang sekali itu cuma nama sekolah
+                return False
+            return True
+            
+        return False
+
+    def _create_get_info_plan(self, query: str) -> QueryPlan:
+        """Create plan for specific school detail"""
+        school_name = extract_school_name(query)
+        filters = {}
+        
+        if school_name:
+            filters["nama"] = school_name
+            confidence = 0.95
+            routing = "structured"
+        else:
+            # Fallback semantic search if name not perfectly extracted
+            confidence = 0.6
+            routing = "semantic"
+            
+        return QueryPlan(
+            intent="get_info",
+            routing=routing,
+            filters=filters,
+            text_query=query, # Keep original text for semantic search fallback
+            fields=Config.COMPREHENSIVE_FIELDS["get_info"],
+            limit=1,
+            sort=None,
+            confidence=confidence
+        )
+    
+    def _create_llm_plan(self, user_query: str) -> Optional[QueryPlan]:
+        """Generate QueryPlan using LLM"""
+        try:
+            prompt = self._create_comprehensive_prompt(user_query)
+            
+            # Gunakan mode non-streaming untuk JSON output agar integritas data terjaga
+            llm_response = self.llm_client.call_llm(
+                prompt, 
+                temperature=Config.LLM_TEMPERATURES["query_planning"],
+                use_streaming=False
+            )
+            
+            if llm_response:
+                return self._parse_llm_plan(llm_response, user_query)
+                
+        except Exception as e:
+            self.logger.error(f"Error in _create_llm_plan: {e}")
+        
+        return None
+    
+    def _create_comprehensive_prompt(self, query: str) -> str:
+        """
+        Constructs the System Prompt.
+        Injeksi FIELD_MAPPING dari Config agar LLM paham sinonim bahasa Indonesia.
+        """
+        
+        # 1. Generate Mapping List (untuk konteks LLM)
+        mapping_context = []
+        seen_fields = set()
+        for term, field in Config.FIELD_MAPPING.items():
+            if field not in seen_fields:
+                mapping_context.append(f"- '{term}' (dan variasinya) -> database field: '{field}'")
+                seen_fields.add(field)
+            else:
+                # Add synonym example
+                mapping_context.append(f"- '{term}' -> '{field}'")
+        
+        mapping_str = "\n".join(mapping_context[:100]) # Limit to top 100 mappings
+        
+        # 2. Schema Info
+        schema_str = "\n".join([f"- {f}" for f in list(Config.VALID_FIELDS)[:20]]) 
+
+        return f"""
+You are an expert Query Planner for an Indonesian School Database System.
+Your task is to analyze the User Query and convert it into a structured JSON Query Plan.
+
+USER QUERY: "{query}"
+
+### KNOWLEDGE BASE (SYNONYMS)
+Use this mapping to understand user terms:
+{mapping_str}
+
+### RULES
+1. **Filters**: Extract specific criteria.
+   - Status: "Negeri" OR "Swasta".
+   - Akreditasi: "A", "B", "C".
+   - Location: Map to "namaKecamatan" with "KEC. " prefix (e.g., "Candi" -> "KEC. CANDI").
+   - Numeric: Use operators for "pd" (siswa), "ptk" (guru), etc. 
+     Ex: "di atas 500 murid" -> {{"pd": {{"op": ">", "value": 500}}}}
+2. **Intent**:
+   - "search_school": List/filter schools.
+   - "get_info": Detail of one specific school.
+   - "count_query": Counting statistics.
+3. **Routing**:
+   - "structured": If query has clear filters (status, loc, etc).
+   - "semantic": If query is vague (e.g., "sekolah favorit").
+   - "hybrid": If query has both.
+
+### OUTPUT FORMAT (JSON ONLY)
+{{
+    "intent": "search_school",
+    "routing": "hybrid",
+    "filters": {{
+        "status_sekolah": "Negeri",
+        "namaKecamatan": "KEC. WARU"
+    }},
+    "text_query": "sekolah bagus",
+    "fields": ["nama", "npsn", "alamatJalan"],
+    "limit": 20,
+    "confidence": 0.9
+}}
+
+Respond ONLY with valid JSON. No markdown code blocks.
+"""
+    
+    def _parse_llm_plan(self, response: str, user_query: str) -> Optional[QueryPlan]:
+        """Safely parse JSON from LLM response"""
+        try:
+            # 1. Clean Markdown wrappers (```json ... ```)
+            cleaned = response.replace("```json", "").replace("```", "").strip()
+            
+            # 2. Find JSON boundaries
+            start = cleaned.find('{')
+            end = cleaned.rfind('}')
+            if start == -1 or end == -1:
+                raise ValueError("No JSON object found")
+                
+            json_str = cleaned[start:end+1]
+            data = json.loads(json_str)
+            
+            # 3. Validate & Sanitize Filters
+            raw_filters = data.get("filters", {})
+            clean_filters = self._validate_filters(raw_filters)
+            
+            # 4. Construct Plan
+            return QueryPlan(
+                intent=data.get("intent", "search_school"),
+                routing=data.get("routing", "hybrid"),
+                filters=clean_filters,
+                text_query=data.get("text_query", user_query),
+                fields=data.get("fields", ["nama", "npsn"]),
+                limit=min(data.get("limit", 20), Config.MAX_LIMIT),
+                sort=data.get("sort"),
+                confidence=float(data.get("confidence", 0.5))
+            )
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to parse LLM plan: {e}. Response was: {response[:100]}...")
+            return None
+
+    def _validate_filters(self, filters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validates keys against Config.VALID_FIELDS and fixes common LLM mistakes.
+        """
+        validated = {}
+        for k, v in filters.items():
+            # Direct valid field
+            if k in Config.VALID_FIELDS or k in Config.NUMERIC_FIELDS:
+                validated[k] = v
+            
+            # Common Mistakes correction (LLM terkadang halusinasi nama field)
+            elif k.lower() == "kecamatan": validated["namaKecamatan"] = v
+            elif k.lower() == "kabupaten": validated["namaKabupaten"] = v
+            elif k.lower() == "provinsi": validated["namaProvinsi"] = v
+            elif k.lower() == "status": validated["status_sekolah"] = v
+            elif k.lower() == "jumlah_siswa": validated["pd"] = v
+            elif k.lower() == "jumlah_guru": validated["ptk"] = v
+            
+        return validated
+
+    def _create_rule_based_plan(self, user_query: str) -> QueryPlan:
+        """Fallback mechanism using regex extraction from utils"""
+        # Menggunakan fungsi regex yang kuat dari utils.py
+        filters = extract_filters_from_query(user_query)
+        
+        # Basic intent detection
+        query_lower = user_query.lower()
+        intent = "search_school"
+        if any(x in query_lower for x in ["info", "detail", "profil"]):
+            intent = "get_info"
+        
+        # Basic routing logic
+        if len(filters) > 0:
+            routing = "structured"
+        else:
+            routing = "semantic"
+            
+        return QueryPlan(
+            intent=intent,
+            routing=routing,
+            filters=filters,
+            text_query=user_query,
+            fields=Config.COMPREHENSIVE_FIELDS.get(intent, ["nama", "npsn"]),
+            limit=20,
+            sort=None,
+            confidence=0.5
+        )
