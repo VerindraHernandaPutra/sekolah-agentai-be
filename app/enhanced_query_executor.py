@@ -66,6 +66,12 @@ class EnhancedQueryExecutor:
             if results and len(results) > 1:
                 results = self._sort_results(results, plan, user_query)
             
+            # 6. Apply Limit
+            # Ensure we respect the requested limit after all filtering and sorting
+            if plan.limit and len(results) > plan.limit:
+                self.logger.info(f"Applying limit: trimming {len(results)} results to {plan.limit}")
+                results = results[:plan.limit]
+
             # Log Performance
             execution_time = time.time() - start_time
             self._log_performance(user_query, plan, len(results), execution_time)

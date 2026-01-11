@@ -249,6 +249,10 @@ def build_qdrant_filter(filters: Dict[str, Any]) -> Optional[models.Filter]:
         if key not in Config.VALID_FIELDS and key not in Config.NUMERIC_FIELDS:
             continue
             
+        # Ignore virtual fields for Qdrant filtering
+        if key == "name_contains":
+            continue
+
         try:
             # Case A: Complex Numeric Filter (Dict with 'op' and 'value')
             if isinstance(val, dict) and 'op' in val and 'value' in val:
@@ -385,3 +389,25 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
             filters['name_contains'] = extracted
 
     return filters
+
+def extract_limit_from_query(query: str) -> Optional[int]:
+    """Extracts the requested number of results (limit) from the query."""
+    text = normalize_text(query)
+
+    # Pattern 1: Explicit "Top X" or "List X" or "Cari X"
+    # e.g., "top 10", "list 5", "cari 3", "tampilkan 20"
+    match_explicit = re.search(r'\b(top|list|daftar|cari|tampilkan|sebanyak|jumlah)\s+(\d+)', text)
+    if match_explicit:
+        return int(match_explicit.group(2))
+
+    # Pattern 2: "X sekolah", "X smk", "X sma" (where X is a small number)
+    # e.g., "10 sekolah terbaik", "5 smk di sidoarjo"
+    match_implicit = re.search(r'\b(\d+)\s+(sekolah|smk|sma|sd|smp|slb|madrasah|hasil|data)', text)
+    if match_implicit:
+        val = int(match_implicit.group(1))
+        # Threshold to avoid confusing "500 sekolah" (limit) with "500 siswa" (filter)
+        # Assuming if user asks for > 100 schools, it might still be a limit request if phrased like "1000 sekolah".
+        # But "500 siswa" is different because "siswa" is not in the list above.
+        return val
+
+    return None

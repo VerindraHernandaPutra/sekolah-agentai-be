@@ -10,7 +10,8 @@ from app.utils import (
     extract_location_entities,
     extract_numbers_with_context,
     extract_school_name,
-    extract_filters_from_query
+    extract_filters_from_query,
+    extract_limit_from_query
 )
 from app.enhanced_llm_utils import EnhancedLLMClient
 
@@ -326,6 +327,12 @@ Respond ONLY with valid JSON. No markdown code blocks.
         # Menggunakan fungsi regex yang kuat dari utils.py
         filters = extract_filters_from_query(user_query)
         
+        # Extract limit if exists
+        requested_limit = extract_limit_from_query(user_query)
+        limit = requested_limit if requested_limit else 20
+        # Ensure limit doesn't exceed max config
+        limit = min(limit, Config.MAX_LIMIT)
+
         # Basic intent detection
         query_lower = user_query.lower()
         intent = "search_school"
@@ -344,7 +351,7 @@ Respond ONLY with valid JSON. No markdown code blocks.
             filters=filters,
             text_query=user_query,
             fields=Config.COMPREHENSIVE_FIELDS.get(intent, ["nama", "npsn"]),
-            limit=20,
+            limit=limit,
             sort=None,
             confidence=0.5
         )
