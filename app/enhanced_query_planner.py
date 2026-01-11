@@ -112,7 +112,12 @@ class EnhancedQueryPlanner:
         
         # 1. Cek kata kunci filter/pencarian (Jika ada, BUKAN get_info)
         # Jika ada kata "kurang dari", "lebih dari", "yang memiliki", itu pasti search
-        search_indicators = ["kurang dari", "lebih dari", "yang punya", "yang memiliki", "dengan akreditasi", "cari sekolah"]
+        # Added "dan", "atau" to catch list queries like "SMA dan SMK"
+        search_indicators = [
+            "kurang dari", "lebih dari", "yang punya", "yang memiliki",
+            "dengan akreditasi", "cari sekolah", "daftar sekolah",
+            "sekolah yang", "sekolah dimana"
+        ]
         if any(ind in query_lower for ind in search_indicators):
             return False
 
@@ -122,11 +127,17 @@ class EnhancedQueryPlanner:
         
         # 3. Specific school name check 
         school_name = extract_school_name(query)
+
         # Nama sekolah valid biasanya tidak sepanjang query itu sendiri (kecuali query sangat pendek)
-        if school_name and len(school_name) > 5:
+        if school_name and len(school_name) > 3:
+            # CHECK: If query contains explicit conjunctions, it's likely a list, not a single school info
+            if " dan " in query_lower or " atau " in query_lower:
+                return False
+
             # Jika panjang nama sekolah > 80% panjang query, mungkin itu memang nama sekolah
             # Tapi jika query panjang dan nama sekolah yang terdeteksi juga panjang banget, curigai itu kalimat
-            if len(query.split()) > 6: # Jika lebih dari 6 kata, jarang sekali itu cuma nama sekolah
+            # Updated threshold to 8 words to be safe
+            if len(query.split()) > 8:
                 return False
             return True
             
@@ -211,14 +222,16 @@ Use this mapping to understand user terms:
 
 ### RULES
 1. **Filters**: Extract specific criteria.
-   - Status: "Negeri" OR "Swasta".
+   - Status: "Negeri" OR "Swasta". HANDLE NEGATION: "bukan negeri" -> "Swasta".
    - Akreditasi: "A", "B", "C".
    - Location: Map to "namaKecamatan" with "KEC. " prefix (e.g., "Candi" -> "KEC. CANDI").
    - Numeric: Use operators for "pd" (siswa), "ptk" (guru), etc. 
      Ex: "di atas 500 murid" -> {{"pd": {{"op": ">", "value": 500}}}}
+   - Multiple Values: If multiple items are requested (e.g., "SMA dan SMK"), return a list: ["SMA", "SMK"].
+   - Existential: "ada lab", "punya perpustakaan" -> filter for > 0.
 2. **Intent**:
-   - "search_school": List/filter schools.
-   - "get_info": Detail of one specific school.
+   - "search_school": List/filter schools (plural, comparison, list).
+   - "get_info": Detail of one specific school (singular name).
    - "count_query": Counting statistics.
 3. **Routing**:
    - "structured": If query has clear filters (status, loc, etc).
@@ -231,7 +244,8 @@ Use this mapping to understand user terms:
     "routing": "hybrid",
     "filters": {{
         "status_sekolah": "Negeri",
-        "namaKecamatan": "KEC. WARU"
+        "namaKecamatan": "KEC. WARU",
+        "bentukPendidikan": ["SMA", "SMK"]
     }},
     "text_query": "sekolah bagus",
     "fields": ["nama", "npsn", "alamatJalan"],

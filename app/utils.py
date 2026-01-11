@@ -199,6 +199,7 @@ def extract_school_name(text: str) -> Optional[str]:
     """
     Enhanced school name extraction using patterns from Config.
     Prioritizes quoted strings and known school prefixes.
+    Avoids false positives for list queries (e.g., "SMA dan SMK").
     """
     text_clean = normalize_text(text)
     
@@ -211,7 +212,14 @@ def extract_school_name(text: str) -> Optional[str]:
     for pattern_str in Config.SCHOOL_NAME_PATTERNS:
         match = re.search(pattern_str, text_clean, re.IGNORECASE)
         if match:
-            return match.group(0).upper()
+            extracted = match.group(0).upper()
+
+            # Additional Check: Avoid matching conjunctions that imply a list query
+            # If the extracted name contains " DAN " or " ATAU ", it's likely a list
+            if " DAN " in extracted or " ATAU " in extracted:
+                continue
+
+            return extracted
             
     return None
 
@@ -294,10 +302,22 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
         # If NPSN is found, usually other filters are irrelevant for finding the specific school
         return filters 
         
-    # 2. Status Sekolah (Negeri/Swasta)
-    # Logic: Check keywords
-    if 'negeri' in query_lower: filters['status_sekolah'] = 'Negeri'
-    elif 'swasta' in query_lower: filters['status_sekolah'] = 'Swasta'
+    # 2. Status Sekolah (Negeri/Swasta) with Negation Support
+    is_negeri = 'negeri' in query_lower
+    is_swasta = 'swasta' in query_lower
+
+    # Check for negation patterns before the keyword
+    negation_negeri = re.search(r'\b(bukan|selain|non)\s+negeri', query_lower)
+    negation_swasta = re.search(r'\b(bukan|selain|non)\s+swasta', query_lower)
+
+    if negation_negeri:
+        filters['status_sekolah'] = 'Swasta'
+    elif negation_swasta:
+        filters['status_sekolah'] = 'Negeri'
+    elif is_negeri:
+        filters['status_sekolah'] = 'Negeri'
+    elif is_swasta:
+        filters['status_sekolah'] = 'Swasta'
     
     # 3. Akreditasi
     # Regex to catch "akreditasi A", "nilai A", or just "A" if context supports it
@@ -305,20 +325,42 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
     elif re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*b\b', query_lower): filters['akreditasi'] = 'B'
     elif re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*c\b', query_lower): filters['akreditasi'] = 'C'
     
-    # 4. Bentuk Pendidikan (Jenjang)
+    # 4. Bentuk Pendidikan (Jenjang) - Support Multiple Values
     # Iterate through mapping in Config
+    found_forms = set()
     for key, val in Config.VALUE_MAPPING['bentukPendidikan'].items():
         # Ensure whole word match to avoid partials (e.g. "smp" matching inside "smpg")
         # Using regex boundary \b
         if re.search(rf"\b{re.escape(key)}\b", query_lower):
-            filters['bentukPendidikan'] = val
-            break
+            found_forms.add(val)
+
+    if found_forms:
+        found_list = list(found_forms)
+        if len(found_list) == 1:
+            filters['bentukPendidikan'] = found_list[0]
+        else:
+            filters['bentukPendidikan'] = found_list
             
     # 5. Numeric Filters (Siswa, Guru, Fasilitas)
     numbers = extract_numbers_with_context(query)
     for val, field, op in numbers:
         filters[field] = {"op": op, "value": val}
-        
+
+    # 5b. Existential Checks (e.g., "punya lab", "ada perpustakaan")
+    # If no numeric filter for these fields exists, we assume user wants > 0
+    existential_map = {
+        'lab': 'jml_lab',
+        'laboratorium': 'jml_lab',
+        'perpus': 'jml_perpus',
+        'perpustakaan': 'jml_perpus',
+        'komputer': 'jml_lab' # often implies lab computer
+    }
+
+    for kw, field in existential_map.items():
+        if field not in filters and kw in query_lower:
+             # Only add if keyword is present
+             filters[field] = {"op": ">", "value": 0}
+
     # 6. Location (Kecamatan, Kab, Prov)
     locs = extract_location_entities(query)
     filters.update(locs)
