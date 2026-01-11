@@ -153,7 +153,9 @@ class EnhancedQueryPlanner:
             # (e.g. "telkom" should match "SMK TELKOM SIDOARJO")
             filters["name_contains"] = school_name
             confidence = 0.95
-            routing = "structured"
+            # USE HYBRID routing because 'name_contains' is not a valid Qdrant structured filter field.
+            # We need vector search to find candidates, then manual filtering will enforce the name match.
+            routing = "hybrid"
         else:
             # Fallback semantic search if name not perfectly extracted
             confidence = 0.6
