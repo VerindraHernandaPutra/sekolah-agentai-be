@@ -60,7 +60,7 @@ class Config:
     # =================================================================
     LLM_TEMPERATURES = {
         "query_planning": 0.1,
-        "response_generation": 0.3,
+        "response_generation": 0.1,
         "html_generation": 0.1
     }
 
