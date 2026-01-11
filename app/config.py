@@ -204,7 +204,8 @@ class Config:
 
     # Regex Patterns untuk deteksi nama sekolah
     SCHOOL_NAME_PATTERNS = [
-        r'\b(SD|SMP|SMA|SMK|TK|PAUD|MI|MTs|MA)\s+(NEGERI|SWASTA)?\s*(\d+|\w+(?:\s+\w+)*)',
+        # Pattern 1: Tipe + (Negeri/Swasta) + Nama. Stop at 'di', 'kecamatan', etc.
+        r'\b(SD|SMP|SMA|SMK|TK|PAUD|MI|MTs|MA)\s+(NEGERI|SWASTA)?\s*(\d+|\w+(?:\s+(?!di\b|kecamatan\b|kabupaten\b)\w+)*)',
         r'\b(SD|SMP|SMA|SMK|TK|PAUD)\s+([A-Z][A-Z0-9\s\-\.]+)',
         r'\b(SMAN|SMPN|SDN)\s+(\d+)?\s*([A-Z\s]+)'
     ]

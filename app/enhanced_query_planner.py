@@ -117,7 +117,8 @@ class EnhancedQueryPlanner:
         search_indicators = [
             "kurang dari", "lebih dari", "yang punya", "yang memiliki",
             "dengan akreditasi", "cari sekolah", "daftar sekolah",
-            "sekolah yang", "sekolah dimana"
+            "sekolah yang", "sekolah dimana", "list", "top", "tampilkan",
+            "jumlah", "tabel"
         ]
         if any(ind in query_lower for ind in search_indicators):
             return False
