@@ -239,7 +239,8 @@ Use this mapping to understand user terms:
 2. **Intent**:
    - "search_school": List/filter schools (plural, comparison, list).
    - "get_info": Detail of one specific school (singular name).
-   - "count_query": Counting statistics.
+   - "count_query": Counting statistics (e.g. "berapa jumlah...").
+   - "ranking_query": Best/Top schools (e.g. "sekolah terbaik", "unggulan", "favorit").
 3. **Routing**:
    - "structured": If query has clear filters (status, loc, etc).
    - "semantic": If query is vague (e.g., "sekolah favorit").
@@ -337,8 +338,14 @@ Respond ONLY with valid JSON. No markdown code blocks.
         # Basic intent detection
         query_lower = user_query.lower()
         intent = "search_school"
+
+        # Check for specific intents
         if any(x in query_lower for x in ["info", "detail", "profil"]):
             intent = "get_info"
+        elif any(x in query_lower for x in ["terbaik", "bagus", "unggulan", "favorit", "top", "rank"]):
+            intent = "ranking_query"
+        elif any(x in query_lower for x in ["berapa", "jumlah", "total", "hitung"]):
+            intent = "count_query"
         
         # Basic routing logic
         if len(filters) > 0:
