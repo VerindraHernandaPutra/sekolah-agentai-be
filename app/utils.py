@@ -199,6 +199,7 @@ def extract_school_name(text: str) -> Optional[str]:
     """
     Enhanced school name extraction using patterns from Config.
     Prioritizes quoted strings and known school prefixes.
+    Also supports explicit "nama [word]" pattern for strict filtering.
     Avoids false positives for list queries (e.g., "SMA dan SMK").
     """
     text_clean = normalize_text(text)
@@ -207,8 +208,17 @@ def extract_school_name(text: str) -> Optional[str]:
     quoted = re.search(r'"([^"]+)"', text_clean)
     if quoted:
         return quoted.group(1).upper()
+
+    # 2. Try Explicit "nama [X]" pattern (e.g. "nama telkom")
+    # This allows users to force a name filter even if the word isn't a school prefix
+    nama_match = re.search(r'\bnama\s+([a-zA-Z0-9]+)(?:\s|$)', text_clean, re.IGNORECASE)
+    if nama_match:
+        extracted = nama_match.group(1).upper()
+        # Avoid stop words or conjunctions being picked up as names
+        if extracted not in ["SEKOLAH", "YANG", "DI", "DENGAN", "DAN", "ATAU"]:
+            return extracted
         
-    # 2. Try Patterns from Config
+    # 3. Try Patterns from Config
     for pattern_str in Config.SCHOOL_NAME_PATTERNS:
         match = re.search(pattern_str, text_clean, re.IGNORECASE)
         if match:
@@ -365,4 +375,13 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
     locs = extract_location_entities(query)
     filters.update(locs)
     
+    # 7. Explicit Name Filter ("nama [X]")
+    # We use a special key 'name_contains' to signal partial/substring matching
+    # re-use the logic from extract_school_name but strictly for the "nama" pattern
+    nama_match = re.search(r'\bnama\s+([a-zA-Z0-9]+)(?:\s|$)', query_lower)
+    if nama_match:
+        extracted = nama_match.group(1).upper()
+        if extracted not in ["SEKOLAH", "YANG", "DI", "DENGAN", "DAN", "ATAU"]:
+            filters['name_contains'] = extracted
+
     return filters

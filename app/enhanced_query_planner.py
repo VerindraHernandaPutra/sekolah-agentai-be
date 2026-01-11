@@ -149,7 +149,9 @@ class EnhancedQueryPlanner:
         filters = {}
         
         if school_name:
-            filters["nama"] = school_name
+            # Use name_contains for partial matching to be more user-friendly
+            # (e.g. "telkom" should match "SMK TELKOM SIDOARJO")
+            filters["name_contains"] = school_name
             confidence = 0.95
             routing = "structured"
         else:
@@ -229,6 +231,7 @@ Use this mapping to understand user terms:
      Ex: "di atas 500 murid" -> {{"pd": {{"op": ">", "value": 500}}}}
    - Multiple Values: If multiple items are requested (e.g., "SMA dan SMK"), return a list: ["SMA", "SMK"].
    - Existential: "ada lab", "punya perpustakaan" -> filter for > 0.
+   - Partial Name: If user says "nama [X]" (e.g. "nama telkom"), add filter: {{"name_contains": "Telkom"}}.
 2. **Intent**:
    - "search_school": List/filter schools (plural, comparison, list).
    - "get_info": Detail of one specific school (singular name).
@@ -301,6 +304,10 @@ Respond ONLY with valid JSON. No markdown code blocks.
             if k in Config.VALID_FIELDS or k in Config.NUMERIC_FIELDS:
                 validated[k] = v
             
+            # Special keys
+            elif k == "name_contains":
+                validated[k] = v
+
             # Common Mistakes correction (LLM terkadang halusinasi nama field)
             elif k.lower() == "kecamatan": validated["namaKecamatan"] = v
             elif k.lower() == "kabupaten": validated["namaKabupaten"] = v
@@ -308,6 +315,7 @@ Respond ONLY with valid JSON. No markdown code blocks.
             elif k.lower() == "status": validated["status_sekolah"] = v
             elif k.lower() == "jumlah_siswa": validated["pd"] = v
             elif k.lower() == "jumlah_guru": validated["ptk"] = v
+            elif k.lower() == "nama_partial": validated["name_contains"] = v # Alias handling
             
         return validated
 

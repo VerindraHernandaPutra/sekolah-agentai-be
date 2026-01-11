@@ -93,6 +93,15 @@ class EnhancedQueryExecutor:
         for school in results:
             match = True
             for field, value in filters.items():
+                # Handle Special Keys
+                if field == "name_contains":
+                    # Partial match for name
+                    school_name = str(school.get("nama", "")).lower()
+                    target_name = str(value).lower()
+                    if target_name not in school_name:
+                        match = False
+                    continue
+
                 school_value = school.get(field)
                 
                 # Handle numeric operators (e.g., {"op": ">", "value": 500})
@@ -115,7 +124,12 @@ class EnhancedQueryExecutor:
                 
                 # Handle exact string match
                 else:
-                    if str(school_value).lower() != str(value).lower():
+                    # Skip if value is list (handled by build_qdrant_filter, but for manual filter we assume exact or skip)
+                    # If it is a list, check if school_value is IN that list
+                    if isinstance(value, list):
+                        if school_value not in value:
+                             match = False
+                    elif str(school_value).lower() != str(value).lower():
                         match = False
             
             if match:
