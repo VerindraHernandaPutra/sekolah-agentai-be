@@ -3,9 +3,9 @@ import time
 import logging
 import json
 from typing import List, Dict, Any, Optional
-from config import Config
-from enhanced_query_planner import QueryPlan
-from enhanced_llm_utils import EnhancedLLMClient
+from app.config import Config
+from app.enhanced_query_planner import QueryPlan
+from app.enhanced_llm_utils import EnhancedLLMClient
 
 class EnhancedResponseGenerator:
     """

@@ -6,7 +6,7 @@ import json
 import unicodedata
 from typing import Dict, Any, Optional, List, Tuple
 from qdrant_client import models
-from config import Config
+from app.config import Config
 
 def setup_logging(level=logging.INFO):
     """Enhanced logging setup"""

@@ -4,15 +4,15 @@ import logging
 import re
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
-from config import Config
-from utils import (
+from app.config import Config
+from app.utils import (
     normalize_query,
     extract_location_entities,
     extract_numbers_with_context,
     extract_school_name,
     extract_filters_from_query
 )
-from enhanced_llm_utils import EnhancedLLMClient
+from app.enhanced_llm_utils import EnhancedLLMClient
 
 @dataclass
 class QueryPlan:

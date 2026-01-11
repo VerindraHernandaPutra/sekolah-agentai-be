@@ -2,9 +2,9 @@
 import time
 import logging
 from typing import Dict, List, Any, Optional, Tuple
-from enhanced_query_planner import QueryPlan, EnhancedQueryPlanner
-from config import Config
-from utils import build_qdrant_filter, normalize_query
+from app.enhanced_query_planner import QueryPlan, EnhancedQueryPlanner
+from app.config import Config
+from app.utils import build_qdrant_filter, normalize_query
 
 class EnhancedQueryExecutor:
     """

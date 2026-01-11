@@ -1,6 +1,6 @@
 # enhanced_database.py
 import logging
-from config import Config
+from app.config import Config
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from sentence_transformers import SentenceTransformer
