@@ -42,12 +42,18 @@ class EnhancedQueryPlanner:
     def plan_query(self, user_query: str) -> QueryPlan:
         """
         Main planning pipeline:
-        1. Check Cache
-        2. Get Info Check (Specific School Name) -> Fast Path
-        3. Strong Rule-Based Check (Regex Priority) -> Robust Path for Ollama
-        4. LLM Analysis (Deep understanding for ambiguous queries) -> Smart Path
-        5. Fallback Rule-Based -> Safety Net
+        1. Special Intent Check (Greeting, Unsupported, Out of Scope) -> Instant Reply
+        2. Check Cache
+        3. Get Info Check (Specific School Name) -> Fast Path
+        4. Strong Rule-Based Check (Regex Priority) -> Robust Path for Ollama
+        5. LLM Analysis (Deep understanding for ambiguous queries) -> Smart Path
+        6. Fallback Rule-Based -> Safety Net
         """
+        # 0. SPECIAL INTENTS (Pre-computation)
+        special_plan = self._detect_special_intents(user_query)
+        if special_plan:
+            return special_plan
+
         cache_key = normalize_query(user_query)
         if cache_key in self.cache:
             self.logger.info("Using cached query plan")
@@ -368,3 +374,28 @@ Respond ONLY with valid JSON. No markdown code blocks.
             sort=sort_pref,
             confidence=0.5
         )
+
+    def _detect_special_intents(self, user_query: str) -> Optional[QueryPlan]:
+        """Detect edge cases: greetings, out of scope, unsupported features"""
+        q = user_query.lower()
+
+        # 1. Greetings
+        # Exact match or starts with greeting (e.g. "Halo admin")
+        clean_q = re.sub(r'[^\w\s]', '', q) # remove punct
+        tokens = clean_q.split()
+        if any(g in tokens for g in Config.GREETING_KEYWORDS):
+             return QueryPlan(intent="greeting", routing="none", filters={}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
+        # 2. Unsupported Features (Biaya, Ekskul, Jurusan specific)
+        for keyword in Config.UNSUPPORTED_FEATURES:
+            if keyword in q:
+                # Special check to ensure it's not a valid search context?
+                # For now, strict rejection for these keywords as per requirement.
+                return QueryPlan(intent="unknown_intent", routing="none", filters={"unsupported": keyword}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
+        # 3. Out of Scope Locations
+        for loc in Config.OUT_OF_SCOPE_LOCATIONS:
+            if loc in q:
+                return QueryPlan(intent="out_of_scope_location", routing="none", filters={"location": loc}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
+        return None

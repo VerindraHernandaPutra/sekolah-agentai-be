@@ -219,6 +219,31 @@ class Config:
         'tepat': '==', 'sama dengan': '==', 'persis': '=='
     }
 
+    # =================================================================
+    # 6. EDGE CASES & UNSUPPORTED QUERIES
+    # =================================================================
+
+    # Kata kunci untuk fitur yang TIDAK didukung database
+    UNSUPPORTED_FEATURES = [
+        "biaya", "spp", "bayar", "uang pangkal", "gaji", # Finance
+        "ekskul", "ekstrakurikuler", "basket", "futsal", "renang", # Activities
+        "jurusan", "kompetensi", "prodi", "program keahlian", # Specific Majors (Detailed)
+        "nama guru", "wali kelas", "guru matematika", "guru bahasa", # Teacher names
+        "nilai", "un", "utbk", "skhun", "ijazah", "prestasi", # Grades
+        "ppdb", "pendaftaran", "daftar ulang", "kapan buka", "jadwal", # Dynamic Info
+        "jarak", "kilometer", "km dari sini", "rute", # Real-time Geo
+        "angker", "hantu", "mistis", "nakal", "tawuran", "favorit" # Subjective
+    ]
+
+    # Lokasi di luar scope (Hardcoded common neighbors)
+    OUT_OF_SCOPE_LOCATIONS = [
+        "surabaya", "jakarta", "gresik", "malang", "mojokerto",
+        "pasuruan", "jombang", "bandung", "semarang", "jogja", "yogyakarta"
+    ]
+
+    # Kata sapaan
+    GREETING_KEYWORDS = ["halo", "hai", "hi", "apa kabar", "selamat pagi", "selamat siang", "selamat sore", "selamat malam", "assalamualaikum", "permisi"]
+
 # --- EXPORT MODULE LEVEL VARIABLES ---
 # Ini penting agar file lain (seperti auth.py) bisa melakukan import langsung
 # Contoh: from app.config import SECRET_KEY
