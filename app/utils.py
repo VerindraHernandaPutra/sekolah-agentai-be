@@ -105,7 +105,10 @@ def extract_numbers_with_context(text: str) -> List[Tuple[int, str, str]]:
         if field in Config.NUMERIC_FIELDS:
             if field not in field_keywords:
                 field_keywords[field] = []
+            # Add basic keyword
             field_keywords[field].append(re.escape(keyword))
+            # Add suffix variations (e.g., "siswanya", "gurunya")
+            field_keywords[field].append(re.escape(keyword) + r"(?:nya|nya)?")
 
     # 2. Define Operator Regex Patterns
     # Maps regex group to operator symbol. Order matters (longer matches first).
@@ -126,8 +129,8 @@ def extract_numbers_with_context(text: str) -> List[Tuple[int, str, str]]:
         
         # Pattern A: Operator + Number + Keyword (e.g., "lebih dari 500 siswa")
         for op_regex, op_symbol in op_patterns:
-            # Regex: Operator space Number space Keyword
-            pattern_a = f"(?:{op_regex})\\s*(\\d+)\\s*(?:{kw_regex})"
+            # Regex: Operator space Number space Keyword + optional suffix (orang, buah)
+            pattern_a = f"(?:{op_regex})\\s*(\\d+)\\s*(?:orang|buah|ekor)?\\s*(?:{kw_regex})"
             matches = re.finditer(pattern_a, text_clean)
             for m in matches:
                 results.append((int(m.group(1)), field, op_symbol))
@@ -143,7 +146,7 @@ def extract_numbers_with_context(text: str) -> List[Tuple[int, str, str]]:
         # Only if not captured by A or B. We do a simpler pass.
         # Default assumption: "500 siswa" usually implies searching for schools around that size, 
         # but '>=' is a safe default for filtering.
-        pattern_c1 = f"(\\d+)\\s*(?:{kw_regex})"
+        pattern_c1 = f"(\\d+)\\s*(?:orang|buah|ekor)?\\s*(?:{kw_regex})"
         pattern_c2 = f"(?:{kw_regex})\\s*(\\d+)"
         
         for p in [pattern_c1, pattern_c2]:
@@ -224,8 +227,30 @@ def extract_school_name(text: str) -> Optional[str]:
         if match:
             extracted = match.group(0).upper()
 
+            # Additional Check: Avoid generic name capture (e.g., "SD NEGERI" without specific name)
+            # If extracted name contains substantial location info, it's likely a generic query "SD di Waru"
+            # matched as a name.
+            locs_in_name = extract_location_entities(extracted)
+            if locs_in_name:
+                # If the name is basically just Type + Status + Location, discard it.
+                # Heuristic: If we remove Type, Status, and Location words, is anything left?
+                temp_name = extracted
+                # Remove known locations
+                for loc_val in locs_in_name.values():
+                    # "KAB. SIDOARJO" -> "SIDOARJO"
+                    core_loc = loc_val.replace("KAB. ", "").replace("KEC. ", "").replace("PROV. ", "")
+                    temp_name = re.sub(rf"\b{core_loc}\b", "", temp_name, flags=re.IGNORECASE)
+
+                # Remove generic keywords
+                generic_keywords = ["SD", "SMP", "SMA", "SMK", "TK", "PAUD", "NEGERI", "SWASTA", "DI", "KOTA", "KABUPATEN", "KECAMATAN", "DESA"]
+                for kw in generic_keywords:
+                    temp_name = re.sub(rf"\b{kw}\b", "", temp_name, flags=re.IGNORECASE)
+
+                # If remaining string is empty or just whitespace/punctuation, it's generic
+                if not re.search(r'[a-zA-Z0-9]', temp_name):
+                    continue
+
             # Additional Check: Avoid matching conjunctions that imply a list query
-            # If the extracted name contains " DAN " or " ATAU ", it's likely a list
             if " DAN " in extracted or " ATAU " in extracted:
                 continue
 
@@ -306,11 +331,14 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
     Robust Rule-Based Filter Extraction.
     Acts as a reliable fallback or pre-processor for the LLM.
     """
+    logging.info(f"Extracting filters from: {query}")
     filters = {}
     query_lower = normalize_text(query)
     
     # 1. NPSN Check (Highest Priority) - Identifier Unik
+    # We use the raw query for NPSN extraction to avoid normalization issues with numbers
     npsn = extract_npsn(query)
+    logging.info(f"NPSN Extraction result: {npsn}")
     if npsn:
         filters['npsn'] = npsn
         # If NPSN is found, usually other filters are irrelevant for finding the specific school
@@ -334,10 +362,11 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
         filters['status_sekolah'] = 'Swasta'
     
     # 3. Akreditasi
-    # Regex to catch "akreditasi A", "nilai A", or just "A" if context supports it
-    if re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*a\b', query_lower): filters['akreditasi'] = 'A'
-    elif re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*b\b', query_lower): filters['akreditasi'] = 'B'
-    elif re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*c\b', query_lower): filters['akreditasi'] = 'C'
+    # Regex to catch "akreditasi A", "nilai A", "akreditasinya A"
+    # Added "nya" suffix handling
+    if re.search(r'\b(akreditasi(?:nya)?|nilai|grade|peringkat)\s*:?\s*a\b', query_lower): filters['akreditasi'] = 'A'
+    elif re.search(r'\b(akreditasi(?:nya)?|nilai|grade|peringkat)\s*:?\s*b\b', query_lower): filters['akreditasi'] = 'B'
+    elif re.search(r'\b(akreditasi(?:nya)?|nilai|grade|peringkat)\s*:?\s*c\b', query_lower): filters['akreditasi'] = 'C'
     
     # 4. Bentuk Pendidikan (Jenjang) - Support Multiple Values
     # Iterate through mapping in Config

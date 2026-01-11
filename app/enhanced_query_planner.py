@@ -64,6 +64,7 @@ class EnhancedQueryPlanner:
         # Ini SANGAT PENTING untuk Ollama. Ollama (Phi-3) sering gagal menangkap filter numerik 
         # (seperti "< 500 siswa"). Regex Python jauh lebih akurat untuk ini.
         filters_regex = extract_filters_from_query(user_query)
+        self.logger.info(f"Regex extracted: {filters_regex}")
         
         # Kriteria "Strong Filters": Jika ada filter numerik (pd/ptk) atau npsn, percayai Regex.
         # Atau jika regex menemukan lebih dari 1 filter (misal: lokasi + status).
@@ -117,9 +118,9 @@ class EnhancedQueryPlanner:
         # Added "dan", "atau" to catch list queries like "SMA dan SMK"
         search_indicators = [
             "kurang dari", "lebih dari", "yang punya", "yang memiliki",
-            "dengan akreditasi", "cari sekolah", "daftar sekolah",
-            "sekolah yang", "sekolah dimana", "list", "top", "tampilkan",
-            "jumlah", "tabel"
+            "dengan akreditasi", "cari", "daftar", "list", "top", "tampilkan",
+            "sekolah yang", "sekolah dimana",
+            "jumlah", "tabel", "apa saja", "ada sekolah"
         ]
         if any(ind in query_lower for ind in search_indicators):
             return False
