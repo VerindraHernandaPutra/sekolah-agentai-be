@@ -309,8 +309,28 @@ class EnhancedQueryExecutor:
     # --- Sorting & Logging ---
 
     def _sort_results(self, results: List[Dict], plan: QueryPlan, user_query: str) -> List[Dict]:
+        # 1. Use Plan Sort if available (Highest Priority)
+        if plan.sort:
+            for s in plan.sort:
+                field = s.get('field')
+                order = s.get('order', 'desc')
+                reverse = (order.lower() == 'desc')
+
+                # Special handler for accreditation (A, B, C)
+                if field == 'akreditasi':
+                    return self._sort_by_accreditation(results, reverse=reverse)
+
+                # Default integer sort
+                try:
+                     results = sorted(results, key=lambda x: float(x.get(field, 0) or 0), reverse=reverse)
+                except Exception:
+                     # Fallback string sort
+                     results = sorted(results, key=lambda x: str(x.get(field, "")), reverse=reverse)
+            return results
+
         q_lower = user_query.lower()
         
+        # 2. Heuristic Sort based on Intent/Keywords
         if plan.intent == "ranking_query":
             return self._sort_by_quality(results)
         elif plan.intent == "count_query" or "siswa" in q_lower:
@@ -336,9 +356,10 @@ class EnhancedQueryExecutor:
         
         return sorted(results, key=score, reverse=True)
 
-    def _sort_by_accreditation(self, results: List[Dict]) -> List[Dict]:
+    def _sort_by_accreditation(self, results: List[Dict], reverse: bool = True) -> List[Dict]:
         order = {'A': 3, 'B': 2, 'C': 1}
-        return sorted(results, key=lambda x: order.get(x.get('akreditasi', ''), 0), reverse=True)
+        # If reverse=True (DESC), A(3) comes first. If reverse=False (ASC), C(1) or None(0) comes first.
+        return sorted(results, key=lambda x: order.get(x.get('akreditasi', ''), 0), reverse=reverse)
 
     def _log_performance(self, query: str, plan: QueryPlan, count: int, time_taken: float):
         stats = {

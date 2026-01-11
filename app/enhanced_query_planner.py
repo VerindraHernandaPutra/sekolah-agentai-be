@@ -11,7 +11,8 @@ from app.utils import (
     extract_numbers_with_context,
     extract_school_name,
     extract_filters_from_query,
-    extract_limit_from_query
+    extract_limit_from_query,
+    extract_sort_preference
 )
 from app.enhanced_llm_utils import EnhancedLLMClient
 
@@ -335,6 +336,9 @@ Respond ONLY with valid JSON. No markdown code blocks.
         # Ensure limit doesn't exceed max config
         limit = min(limit, Config.MAX_LIMIT)
 
+        # Extract sort preference
+        sort_pref = extract_sort_preference(user_query)
+
         # Basic intent detection
         query_lower = user_query.lower()
         intent = "search_school"
@@ -360,6 +364,6 @@ Respond ONLY with valid JSON. No markdown code blocks.
             text_query=user_query,
             fields=Config.COMPREHENSIVE_FIELDS.get(intent, ["nama", "npsn"]),
             limit=limit,
-            sort=None,
+            sort=sort_pref,
             confidence=0.5
         )

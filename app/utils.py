@@ -411,3 +411,42 @@ def extract_limit_from_query(query: str) -> Optional[int]:
         return val
 
     return None
+
+def extract_sort_preference(query: str) -> Optional[List[Dict[str, str]]]:
+    """
+    Extracts sort preference from query.
+    Returns list of dicts: [{'field': 'pd', 'order': 'desc'}]
+    """
+    text = normalize_text(query)
+    sort_list = []
+
+    # 1. Determine Direction
+    # Default DESC (paling banyak, top, terbaik)
+    order = 'desc'
+    if any(x in text for x in ['sedikit', 'terkecil', 'rendah', 'bawah', 'min', 'kurang']):
+        order = 'asc'
+
+    # 2. Determine Field
+    field = None
+
+    if any(x in text for x in ['siswa', 'murid', 'anak', 'pd']):
+        field = 'pd'
+    elif any(x in text for x in ['guru', 'pengajar', 'ptk']):
+        field = 'ptk'
+    elif any(x in text for x in ['fasilitas', 'lab', 'laboratorium']):
+        field = 'jml_lab'
+    elif any(x in text for x in ['perpus', 'perpustakaan']):
+        field = 'jml_perpus'
+    elif 'akreditasi' in text:
+        field = 'akreditasi'
+
+    # "Paling banyak" without field context -> usually means students (pd) for schools
+    if not field:
+        if any(x in text for x in ['banyak', 'besar', 'ramai', 'sedikit', 'kecil', 'sepi']):
+            field = 'pd'
+
+    if field:
+        sort_list.append({'field': field, 'order': order})
+        return sort_list
+
+    return None
