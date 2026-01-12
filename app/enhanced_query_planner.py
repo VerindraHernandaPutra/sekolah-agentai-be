@@ -54,6 +54,11 @@ class EnhancedQueryPlanner:
         if special_plan:
             return special_plan
 
+        # 0.5 RELEVANCE CHECK
+        # If query is gibberish/irrelevant, stop here.
+        if not self._is_query_relevant(user_query):
+             return QueryPlan(intent="irrelevant_query", routing="none", filters={}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
         cache_key = normalize_query(user_query)
         if cache_key in self.cache:
             self.logger.info("Using cached query plan")
@@ -399,3 +404,58 @@ Respond ONLY with valid JSON. No markdown code blocks.
                 return QueryPlan(intent="out_of_scope_location", routing="none", filters={"location": loc}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
 
         return None
+
+    def _is_query_relevant(self, query: str) -> bool:
+        """
+        Check if query contains at least one known domain keyword.
+        Constructs a whitelist from Config dynamically.
+        """
+        q = query.lower()
+
+        # 1. Gather all relevant terms
+        relevant_terms = set()
+
+        # Core domain terms
+        relevant_terms.update(["sekolah", "pendidikan", "murid", "guru", "siswa", "kelas", "data", "info", "cari", "list", "daftar", "tampilkan", "berapa", "jumlah"])
+
+        # Field Mapping keys (synonyms)
+        relevant_terms.update(k.lower() for k in Config.FIELD_MAPPING.keys())
+
+        # Value Mapping values (flattened)
+        for category in Config.VALUE_MAPPING.values():
+            for k, v in category.items():
+                if isinstance(k, re.Pattern): continue # Skip regex keys
+                relevant_terms.add(k.lower())
+                relevant_terms.add(v.lower())
+
+        # Query Intents (keywords)
+        for intents in Config.QUERY_INTENTS.values():
+            relevant_terms.update(i.lower() for i in intents)
+
+        # Unsupported & Out of Scope (because if user asks about them, it IS relevant to the domain, just not supported)
+        relevant_terms.update(k.lower() for k in Config.UNSUPPORTED_FEATURES)
+        relevant_terms.update(k.lower() for k in Config.OUT_OF_SCOPE_LOCATIONS)
+
+        # Greeting (handled by special intent, but safe to include)
+        relevant_terms.update(k.lower() for k in Config.GREETING_KEYWORDS)
+
+        # 2. Check overlap
+        # Tokenize simply
+        tokens = set(re.findall(r'\w+', q))
+
+        # Allow if any token matches a relevant term
+        # Use regex boundary check for short terms to avoid false positives (e.g. "sd" in "asdf")
+        # For multi-word terms, allow substring match if length > 3
+
+        for term in relevant_terms:
+            if len(term) < 4:
+                if re.search(rf"\b{re.escape(term)}\b", q):
+                    self.logger.info(f"Query '{q}' is relevant due to term (boundary): '{term}'")
+                    return True
+            else:
+                if term in q:
+                    self.logger.info(f"Query '{q}' is relevant due to term (substring): '{term}'")
+                    return True
+
+        self.logger.info(f"Query '{q}' is IRRELEVANT")
+        return False

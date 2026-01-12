@@ -32,7 +32,7 @@ class EnhancedResponseGenerator:
         start_time = time.time()
         
         # 1. Handle Special Intents (No Data Needed)
-        if plan.intent in ["greeting", "unknown_intent", "out_of_scope_location"]:
+        if plan.intent in ["greeting", "unknown_intent", "out_of_scope_location", "irrelevant_query"]:
             return self._generate_special_response(plan)
 
         # 2. Handle No Results
@@ -212,6 +212,9 @@ Jawab:
         elif plan.intent == "unknown_intent":
             keyword = plan.filters.get("unsupported", "tersebut")
             narrative = f"Mohon maaf, database saya hanya mencakup data pokok pendidikan (Dapodik) seperti profil, alamat, jumlah siswa/guru, dan fasilitas dasar. Saya TIDAK memiliki data detail mengenai {keyword}."
+
+        elif plan.intent == "irrelevant_query":
+            narrative = "Mohon maaf, saya tidak mengerti permintaan Anda. Saya adalah asisten data sekolah Sidoarjo. Silakan tanya tentang daftar sekolah, lokasi, statistik siswa/guru, atau profil sekolah tertentu."
 
         response = {
             "type": "none",

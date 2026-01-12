@@ -227,28 +227,25 @@ def extract_school_name(text: str) -> Optional[str]:
         if match:
             extracted = match.group(0).upper()
 
-            # Additional Check: Avoid generic name capture (e.g., "SD NEGERI" without specific name)
-            # If extracted name contains substantial location info, it's likely a generic query "SD di Waru"
-            # matched as a name.
+            # Additional Check: Avoid generic name capture (e.g., "SD NEGERI" or "SD NEGERI SIDOARJO")
+            # If the name is basically just Type + Status (+ Location), discard it.
+            temp_name = extracted
+
+            # 1. Remove known locations if present
             locs_in_name = extract_location_entities(extracted)
             if locs_in_name:
-                # If the name is basically just Type + Status + Location, discard it.
-                # Heuristic: If we remove Type, Status, and Location words, is anything left?
-                temp_name = extracted
-                # Remove known locations
                 for loc_val in locs_in_name.values():
-                    # "KAB. SIDOARJO" -> "SIDOARJO"
                     core_loc = loc_val.replace("KAB. ", "").replace("KEC. ", "").replace("PROV. ", "")
                     temp_name = re.sub(rf"\b{core_loc}\b", "", temp_name, flags=re.IGNORECASE)
 
-                # Remove generic keywords
-                generic_keywords = ["SD", "SMP", "SMA", "SMK", "TK", "PAUD", "NEGERI", "SWASTA", "DI", "KOTA", "KABUPATEN", "KECAMATAN", "DESA"]
-                for kw in generic_keywords:
-                    temp_name = re.sub(rf"\b{kw}\b", "", temp_name, flags=re.IGNORECASE)
+            # 2. Remove generic keywords
+            generic_keywords = ["SD", "SMP", "SMA", "SMK", "TK", "PAUD", "NEGERI", "SWASTA", "DI", "KOTA", "KABUPATEN", "KECAMATAN", "DESA"]
+            for kw in generic_keywords:
+                temp_name = re.sub(rf"\b{kw}\b", "", temp_name, flags=re.IGNORECASE)
 
-                # If remaining string is empty or just whitespace/punctuation, it's generic
-                if not re.search(r'[a-zA-Z0-9]', temp_name):
-                    continue
+            # If remaining string is empty or just whitespace/punctuation, it's generic
+            if not re.search(r'[a-zA-Z0-9]', temp_name):
+                continue
 
             # Additional Check: Avoid matching conjunctions that imply a list query
             if " DAN " in extracted or " ATAU " in extracted:
