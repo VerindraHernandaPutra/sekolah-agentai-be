@@ -6,7 +6,7 @@ import json
 import unicodedata
 from typing import Dict, Any, Optional, List, Tuple
 from qdrant_client import models
-from config import Config
+from app.config import Config
 
 def setup_logging(level=logging.INFO):
     """Enhanced logging setup"""
@@ -105,7 +105,10 @@ def extract_numbers_with_context(text: str) -> List[Tuple[int, str, str]]:
         if field in Config.NUMERIC_FIELDS:
             if field not in field_keywords:
                 field_keywords[field] = []
+            # Add basic keyword
             field_keywords[field].append(re.escape(keyword))
+            # Add suffix variations (e.g., "siswanya", "gurunya")
+            field_keywords[field].append(re.escape(keyword) + r"(?:nya|nya)?")
 
     # 2. Define Operator Regex Patterns
     # Maps regex group to operator symbol. Order matters (longer matches first).
@@ -126,8 +129,8 @@ def extract_numbers_with_context(text: str) -> List[Tuple[int, str, str]]:
         
         # Pattern A: Operator + Number + Keyword (e.g., "lebih dari 500 siswa")
         for op_regex, op_symbol in op_patterns:
-            # Regex: Operator space Number space Keyword
-            pattern_a = f"(?:{op_regex})\\s*(\\d+)\\s*(?:{kw_regex})"
+            # Regex: Operator space Number space Keyword + optional suffix (orang, buah)
+            pattern_a = f"(?:{op_regex})\\s*(\\d+)\\s*(?:orang|buah|ekor)?\\s*(?:{kw_regex})"
             matches = re.finditer(pattern_a, text_clean)
             for m in matches:
                 results.append((int(m.group(1)), field, op_symbol))
@@ -143,7 +146,7 @@ def extract_numbers_with_context(text: str) -> List[Tuple[int, str, str]]:
         # Only if not captured by A or B. We do a simpler pass.
         # Default assumption: "500 siswa" usually implies searching for schools around that size, 
         # but '>=' is a safe default for filtering.
-        pattern_c1 = f"(\\d+)\\s*(?:{kw_regex})"
+        pattern_c1 = f"(\\d+)\\s*(?:orang|buah|ekor)?\\s*(?:{kw_regex})"
         pattern_c2 = f"(?:{kw_regex})\\s*(\\d+)"
         
         for p in [pattern_c1, pattern_c2]:
@@ -199,6 +202,8 @@ def extract_school_name(text: str) -> Optional[str]:
     """
     Enhanced school name extraction using patterns from Config.
     Prioritizes quoted strings and known school prefixes.
+    Also supports explicit "nama [word]" pattern for strict filtering.
+    Avoids false positives for list queries (e.g., "SMA dan SMK").
     """
     text_clean = normalize_text(text)
     
@@ -206,12 +211,47 @@ def extract_school_name(text: str) -> Optional[str]:
     quoted = re.search(r'"([^"]+)"', text_clean)
     if quoted:
         return quoted.group(1).upper()
+
+    # 2. Try Explicit "nama [X]" pattern (e.g. "nama telkom")
+    # This allows users to force a name filter even if the word isn't a school prefix
+    nama_match = re.search(r'\bnama\s+([a-zA-Z0-9]+)(?:\s|$)', text_clean, re.IGNORECASE)
+    if nama_match:
+        extracted = nama_match.group(1).upper()
+        # Avoid stop words or conjunctions being picked up as names
+        if extracted not in ["SEKOLAH", "YANG", "DI", "DENGAN", "DAN", "ATAU"]:
+            return extracted
         
-    # 2. Try Patterns from Config
+    # 3. Try Patterns from Config
     for pattern_str in Config.SCHOOL_NAME_PATTERNS:
         match = re.search(pattern_str, text_clean, re.IGNORECASE)
         if match:
-            return match.group(0).upper()
+            extracted = match.group(0).upper()
+
+            # Additional Check: Avoid generic name capture (e.g., "SD NEGERI" or "SD NEGERI SIDOARJO")
+            # If the name is basically just Type + Status (+ Location), discard it.
+            temp_name = extracted
+
+            # 1. Remove known locations if present
+            locs_in_name = extract_location_entities(extracted)
+            if locs_in_name:
+                for loc_val in locs_in_name.values():
+                    core_loc = loc_val.replace("KAB. ", "").replace("KEC. ", "").replace("PROV. ", "")
+                    temp_name = re.sub(rf"\b{core_loc}\b", "", temp_name, flags=re.IGNORECASE)
+
+            # 2. Remove generic keywords
+            generic_keywords = ["SD", "SMP", "SMA", "SMK", "TK", "PAUD", "NEGERI", "SWASTA", "DI", "KOTA", "KABUPATEN", "KECAMATAN", "DESA"]
+            for kw in generic_keywords:
+                temp_name = re.sub(rf"\b{kw}\b", "", temp_name, flags=re.IGNORECASE)
+
+            # If remaining string is empty or just whitespace/punctuation, it's generic
+            if not re.search(r'[a-zA-Z0-9]', temp_name):
+                continue
+
+            # Additional Check: Avoid matching conjunctions that imply a list query
+            if " DAN " in extracted or " ATAU " in extracted:
+                continue
+
+            return extracted
             
     return None
 
@@ -231,6 +271,10 @@ def build_qdrant_filter(filters: Dict[str, Any]) -> Optional[models.Filter]:
         if key not in Config.VALID_FIELDS and key not in Config.NUMERIC_FIELDS:
             continue
             
+        # Ignore virtual fields for Qdrant filtering
+        if key == "name_contains":
+            continue
+
         try:
             # Case A: Complex Numeric Filter (Dict with 'op' and 'value')
             if isinstance(val, dict) and 'op' in val and 'value' in val:
@@ -284,43 +328,151 @@ def extract_filters_from_query(query: str) -> Dict[str, Any]:
     Robust Rule-Based Filter Extraction.
     Acts as a reliable fallback or pre-processor for the LLM.
     """
+    logging.info(f"Extracting filters from: {query}")
     filters = {}
     query_lower = normalize_text(query)
     
     # 1. NPSN Check (Highest Priority) - Identifier Unik
+    # We use the raw query for NPSN extraction to avoid normalization issues with numbers
     npsn = extract_npsn(query)
+    logging.info(f"NPSN Extraction result: {npsn}")
     if npsn:
         filters['npsn'] = npsn
         # If NPSN is found, usually other filters are irrelevant for finding the specific school
         return filters 
         
-    # 2. Status Sekolah (Negeri/Swasta)
-    # Logic: Check keywords
-    if 'negeri' in query_lower: filters['status_sekolah'] = 'Negeri'
-    elif 'swasta' in query_lower: filters['status_sekolah'] = 'Swasta'
+    # 2. Status Sekolah (Negeri/Swasta) with Negation Support
+    is_negeri = 'negeri' in query_lower
+    is_swasta = 'swasta' in query_lower
+
+    # Check for negation patterns before the keyword
+    negation_negeri = re.search(r'\b(bukan|selain|non)\s+negeri', query_lower)
+    negation_swasta = re.search(r'\b(bukan|selain|non)\s+swasta', query_lower)
+
+    if negation_negeri:
+        filters['status_sekolah'] = 'Swasta'
+    elif negation_swasta:
+        filters['status_sekolah'] = 'Negeri'
+    elif is_negeri:
+        filters['status_sekolah'] = 'Negeri'
+    elif is_swasta:
+        filters['status_sekolah'] = 'Swasta'
     
     # 3. Akreditasi
-    # Regex to catch "akreditasi A", "nilai A", or just "A" if context supports it
-    if re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*a\b', query_lower): filters['akreditasi'] = 'A'
-    elif re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*b\b', query_lower): filters['akreditasi'] = 'B'
-    elif re.search(r'\b(akreditasi|nilai|grade|peringkat)\s*:?\s*c\b', query_lower): filters['akreditasi'] = 'C'
+    # Regex to catch "akreditasi A", "nilai A", "akreditasinya A"
+    # Added "nya" suffix handling
+    if re.search(r'\b(akreditasi(?:nya)?|nilai|grade|peringkat)\s*:?\s*a\b', query_lower): filters['akreditasi'] = 'A'
+    elif re.search(r'\b(akreditasi(?:nya)?|nilai|grade|peringkat)\s*:?\s*b\b', query_lower): filters['akreditasi'] = 'B'
+    elif re.search(r'\b(akreditasi(?:nya)?|nilai|grade|peringkat)\s*:?\s*c\b', query_lower): filters['akreditasi'] = 'C'
     
-    # 4. Bentuk Pendidikan (Jenjang)
+    # 4. Bentuk Pendidikan (Jenjang) - Support Multiple Values
     # Iterate through mapping in Config
+    found_forms = set()
     for key, val in Config.VALUE_MAPPING['bentukPendidikan'].items():
         # Ensure whole word match to avoid partials (e.g. "smp" matching inside "smpg")
         # Using regex boundary \b
         if re.search(rf"\b{re.escape(key)}\b", query_lower):
-            filters['bentukPendidikan'] = val
-            break
+            found_forms.add(val)
+
+    if found_forms:
+        found_list = list(found_forms)
+        if len(found_list) == 1:
+            filters['bentukPendidikan'] = found_list[0]
+        else:
+            filters['bentukPendidikan'] = found_list
             
     # 5. Numeric Filters (Siswa, Guru, Fasilitas)
     numbers = extract_numbers_with_context(query)
     for val, field, op in numbers:
         filters[field] = {"op": op, "value": val}
-        
+
+    # 5b. Existential Checks (e.g., "punya lab", "ada perpustakaan")
+    # If no numeric filter for these fields exists, we assume user wants > 0
+    existential_map = {
+        'lab': 'jml_lab',
+        'laboratorium': 'jml_lab',
+        'perpus': 'jml_perpus',
+        'perpustakaan': 'jml_perpus',
+        'komputer': 'jml_lab' # often implies lab computer
+    }
+
+    for kw, field in existential_map.items():
+        if field not in filters and kw in query_lower:
+             # Only add if keyword is present
+             filters[field] = {"op": ">", "value": 0}
+
     # 6. Location (Kecamatan, Kab, Prov)
     locs = extract_location_entities(query)
     filters.update(locs)
     
+    # 7. Explicit Name Filter ("nama [X]")
+    # We use a special key 'name_contains' to signal partial/substring matching
+    # re-use the logic from extract_school_name but strictly for the "nama" pattern
+    nama_match = re.search(r'\bnama\s+([a-zA-Z0-9]+)(?:\s|$)', query_lower)
+    if nama_match:
+        extracted = nama_match.group(1).upper()
+        if extracted not in ["SEKOLAH", "YANG", "DI", "DENGAN", "DAN", "ATAU"]:
+            filters['name_contains'] = extracted
+
     return filters
+
+def extract_limit_from_query(query: str) -> Optional[int]:
+    """Extracts the requested number of results (limit) from the query."""
+    text = normalize_text(query)
+
+    # Pattern 1: Explicit "Top X" or "List X" or "Cari X"
+    # e.g., "top 10", "list 5", "cari 3", "tampilkan 20"
+    match_explicit = re.search(r'\b(top|list|daftar|cari|tampilkan|sebanyak|jumlah)\s+(\d+)', text)
+    if match_explicit:
+        return int(match_explicit.group(2))
+
+    # Pattern 2: "X sekolah", "X smk", "X sma" (where X is a small number)
+    # e.g., "10 sekolah terbaik", "5 smk di sidoarjo"
+    match_implicit = re.search(r'\b(\d+)\s+(sekolah|smk|sma|sd|smp|slb|madrasah|hasil|data)', text)
+    if match_implicit:
+        val = int(match_implicit.group(1))
+        # Threshold to avoid confusing "500 sekolah" (limit) with "500 siswa" (filter)
+        # Assuming if user asks for > 100 schools, it might still be a limit request if phrased like "1000 sekolah".
+        # But "500 siswa" is different because "siswa" is not in the list above.
+        return val
+
+    return None
+
+def extract_sort_preference(query: str) -> Optional[List[Dict[str, str]]]:
+    """
+    Extracts sort preference from query.
+    Returns list of dicts: [{'field': 'pd', 'order': 'desc'}]
+    """
+    text = normalize_text(query)
+    sort_list = []
+
+    # 1. Determine Direction
+    # Default DESC (paling banyak, top, terbaik)
+    order = 'desc'
+    if any(x in text for x in ['sedikit', 'terkecil', 'rendah', 'bawah', 'min', 'kurang']):
+        order = 'asc'
+
+    # 2. Determine Field
+    field = None
+
+    if any(x in text for x in ['siswa', 'murid', 'anak', 'pd']):
+        field = 'pd'
+    elif any(x in text for x in ['guru', 'pengajar', 'ptk']):
+        field = 'ptk'
+    elif any(x in text for x in ['fasilitas', 'lab', 'laboratorium']):
+        field = 'jml_lab'
+    elif any(x in text for x in ['perpus', 'perpustakaan']):
+        field = 'jml_perpus'
+    elif 'akreditasi' in text:
+        field = 'akreditasi'
+
+    # "Paling banyak" without field context -> usually means students (pd) for schools
+    if not field:
+        if any(x in text for x in ['banyak', 'besar', 'ramai', 'sedikit', 'kecil', 'sepi']):
+            field = 'pd'
+
+    if field:
+        sort_list.append({'field': field, 'order': order})
+        return sort_list
+
+    return None

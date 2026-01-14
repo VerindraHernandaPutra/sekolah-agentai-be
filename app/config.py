@@ -60,7 +60,7 @@ class Config:
     # =================================================================
     LLM_TEMPERATURES = {
         "query_planning": 0.1,
-        "response_generation": 0.3,
+        "response_generation": 0.1,
         "html_generation": 0.1
     }
 
@@ -204,7 +204,8 @@ class Config:
 
     # Regex Patterns untuk deteksi nama sekolah
     SCHOOL_NAME_PATTERNS = [
-        r'\b(SD|SMP|SMA|SMK|TK|PAUD|MI|MTs|MA)\s+(NEGERI|SWASTA)?\s*(\d+|\w+(?:\s+\w+)*)',
+        # Pattern 1: Tipe + (Negeri/Swasta) + Nama. Stop at 'di', 'kecamatan', etc.
+        r'\b(SD|SMP|SMA|SMK|TK|PAUD|MI|MTs|MA)\s+(NEGERI|SWASTA)?\s*(\d+|\w+(?:\s+(?!di\b|kecamatan\b|kabupaten\b)\w+)*)',
         r'\b(SD|SMP|SMA|SMK|TK|PAUD)\s+([A-Z][A-Z0-9\s\-\.]+)',
         r'\b(SMAN|SMPN|SDN)\s+(\d+)?\s*([A-Z\s]+)'
     ]
@@ -217,6 +218,31 @@ class Config:
         'maksimal': '<=', 'paling banyak': '<=', 
         'tepat': '==', 'sama dengan': '==', 'persis': '=='
     }
+
+    # =================================================================
+    # 6. EDGE CASES & UNSUPPORTED QUERIES
+    # =================================================================
+
+    # Kata kunci untuk fitur yang TIDAK didukung database
+    UNSUPPORTED_FEATURES = [
+        "biaya", "spp", "bayar", "uang pangkal", "gaji", # Finance
+        "ekskul", "ekstrakurikuler", "basket", "futsal", "renang", # Activities
+        "jurusan", "kompetensi", "prodi", "program keahlian", # Specific Majors (Detailed)
+        "nama guru", "wali kelas", "guru matematika", "guru bahasa", # Teacher names
+        "nilai", "un", "utbk", "skhun", "ijazah", "prestasi", # Grades
+        "ppdb", "pendaftaran", "daftar ulang", "kapan buka", "jadwal", # Dynamic Info
+        "jarak", "kilometer", "km dari sini", "rute", # Real-time Geo
+        "angker", "hantu", "mistis", "nakal", "tawuran", "favorit" # Subjective
+    ]
+
+    # Lokasi di luar scope (Hardcoded common neighbors)
+    OUT_OF_SCOPE_LOCATIONS = [
+        "surabaya", "jakarta", "gresik", "malang", "mojokerto",
+        "pasuruan", "jombang", "bandung", "semarang", "jogja", "yogyakarta"
+    ]
+
+    # Kata sapaan
+    GREETING_KEYWORDS = ["halo", "hai", "hi", "apa kabar", "selamat pagi", "selamat siang", "selamat sore", "selamat malam", "assalamualaikum", "permisi"]
 
 # --- EXPORT MODULE LEVEL VARIABLES ---
 # Ini penting agar file lain (seperti auth.py) bisa melakukan import langsung

@@ -4,15 +4,17 @@ import logging
 import re
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
-from config import Config
-from utils import (
+from app.config import Config
+from app.utils import (
     normalize_query,
     extract_location_entities,
     extract_numbers_with_context,
     extract_school_name,
-    extract_filters_from_query
+    extract_filters_from_query,
+    extract_limit_from_query,
+    extract_sort_preference
 )
-from enhanced_llm_utils import EnhancedLLMClient
+from app.enhanced_llm_utils import EnhancedLLMClient
 
 @dataclass
 class QueryPlan:
@@ -40,12 +42,23 @@ class EnhancedQueryPlanner:
     def plan_query(self, user_query: str) -> QueryPlan:
         """
         Main planning pipeline:
-        1. Check Cache
-        2. Get Info Check (Specific School Name) -> Fast Path
-        3. Strong Rule-Based Check (Regex Priority) -> Robust Path for Ollama
-        4. LLM Analysis (Deep understanding for ambiguous queries) -> Smart Path
-        5. Fallback Rule-Based -> Safety Net
+        1. Special Intent Check (Greeting, Unsupported, Out of Scope) -> Instant Reply
+        2. Check Cache
+        3. Get Info Check (Specific School Name) -> Fast Path
+        4. Strong Rule-Based Check (Regex Priority) -> Robust Path for Ollama
+        5. LLM Analysis (Deep understanding for ambiguous queries) -> Smart Path
+        6. Fallback Rule-Based -> Safety Net
         """
+        # 0. SPECIAL INTENTS (Pre-computation)
+        special_plan = self._detect_special_intents(user_query)
+        if special_plan:
+            return special_plan
+
+        # 0.5 RELEVANCE CHECK
+        # If query is gibberish/irrelevant, stop here.
+        if not self._is_query_relevant(user_query):
+             return QueryPlan(intent="irrelevant_query", routing="none", filters={}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
         cache_key = normalize_query(user_query)
         if cache_key in self.cache:
             self.logger.info("Using cached query plan")
@@ -62,6 +75,7 @@ class EnhancedQueryPlanner:
         # Ini SANGAT PENTING untuk Ollama. Ollama (Phi-3) sering gagal menangkap filter numerik 
         # (seperti "< 500 siswa"). Regex Python jauh lebih akurat untuk ini.
         filters_regex = extract_filters_from_query(user_query)
+        self.logger.info(f"Regex extracted: {filters_regex}")
         
         # Kriteria "Strong Filters": Jika ada filter numerik (pd/ptk) atau npsn, percayai Regex.
         # Atau jika regex menemukan lebih dari 1 filter (misal: lokasi + status).
@@ -112,7 +126,13 @@ class EnhancedQueryPlanner:
         
         # 1. Cek kata kunci filter/pencarian (Jika ada, BUKAN get_info)
         # Jika ada kata "kurang dari", "lebih dari", "yang memiliki", itu pasti search
-        search_indicators = ["kurang dari", "lebih dari", "yang punya", "yang memiliki", "dengan akreditasi", "cari sekolah"]
+        # Added "dan", "atau" to catch list queries like "SMA dan SMK"
+        search_indicators = [
+            "kurang dari", "lebih dari", "yang punya", "yang memiliki",
+            "dengan akreditasi", "cari", "daftar", "list", "top", "tampilkan",
+            "sekolah yang", "sekolah dimana",
+            "jumlah", "tabel", "apa saja", "ada sekolah"
+        ]
         if any(ind in query_lower for ind in search_indicators):
             return False
 
@@ -122,11 +142,17 @@ class EnhancedQueryPlanner:
         
         # 3. Specific school name check 
         school_name = extract_school_name(query)
+
         # Nama sekolah valid biasanya tidak sepanjang query itu sendiri (kecuali query sangat pendek)
-        if school_name and len(school_name) > 5:
+        if school_name and len(school_name) > 3:
+            # CHECK: If query contains explicit conjunctions, it's likely a list, not a single school info
+            if " dan " in query_lower or " atau " in query_lower:
+                return False
+
             # Jika panjang nama sekolah > 80% panjang query, mungkin itu memang nama sekolah
             # Tapi jika query panjang dan nama sekolah yang terdeteksi juga panjang banget, curigai itu kalimat
-            if len(query.split()) > 6: # Jika lebih dari 6 kata, jarang sekali itu cuma nama sekolah
+            # Updated threshold to 8 words to be safe
+            if len(query.split()) > 8:
                 return False
             return True
             
@@ -138,9 +164,13 @@ class EnhancedQueryPlanner:
         filters = {}
         
         if school_name:
-            filters["nama"] = school_name
+            # Use name_contains for partial matching to be more user-friendly
+            # (e.g. "telkom" should match "SMK TELKOM SIDOARJO")
+            filters["name_contains"] = school_name
             confidence = 0.95
-            routing = "structured"
+            # USE HYBRID routing because 'name_contains' is not a valid Qdrant structured filter field.
+            # We need vector search to find candidates, then manual filtering will enforce the name match.
+            routing = "hybrid"
         else:
             # Fallback semantic search if name not perfectly extracted
             confidence = 0.6
@@ -211,15 +241,19 @@ Use this mapping to understand user terms:
 
 ### RULES
 1. **Filters**: Extract specific criteria.
-   - Status: "Negeri" OR "Swasta".
+   - Status: "Negeri" OR "Swasta". HANDLE NEGATION: "bukan negeri" -> "Swasta".
    - Akreditasi: "A", "B", "C".
    - Location: Map to "namaKecamatan" with "KEC. " prefix (e.g., "Candi" -> "KEC. CANDI").
    - Numeric: Use operators for "pd" (siswa), "ptk" (guru), etc. 
      Ex: "di atas 500 murid" -> {{"pd": {{"op": ">", "value": 500}}}}
+   - Multiple Values: If multiple items are requested (e.g., "SMA dan SMK"), return a list: ["SMA", "SMK"].
+   - Existential: "ada lab", "punya perpustakaan" -> filter for > 0.
+   - Partial Name: If user says "nama [X]" (e.g. "nama telkom"), add filter: {{"name_contains": "Telkom"}}.
 2. **Intent**:
-   - "search_school": List/filter schools.
-   - "get_info": Detail of one specific school.
-   - "count_query": Counting statistics.
+   - "search_school": List/filter schools (plural, comparison, list).
+   - "get_info": Detail of one specific school (singular name).
+   - "count_query": Counting statistics (e.g. "berapa jumlah...").
+   - "ranking_query": Best/Top schools (e.g. "sekolah terbaik", "unggulan", "favorit").
 3. **Routing**:
    - "structured": If query has clear filters (status, loc, etc).
    - "semantic": If query is vague (e.g., "sekolah favorit").
@@ -231,7 +265,8 @@ Use this mapping to understand user terms:
     "routing": "hybrid",
     "filters": {{
         "status_sekolah": "Negeri",
-        "namaKecamatan": "KEC. WARU"
+        "namaKecamatan": "KEC. WARU",
+        "bentukPendidikan": ["SMA", "SMK"]
     }},
     "text_query": "sekolah bagus",
     "fields": ["nama", "npsn", "alamatJalan"],
@@ -287,6 +322,10 @@ Respond ONLY with valid JSON. No markdown code blocks.
             if k in Config.VALID_FIELDS or k in Config.NUMERIC_FIELDS:
                 validated[k] = v
             
+            # Special keys
+            elif k == "name_contains":
+                validated[k] = v
+
             # Common Mistakes correction (LLM terkadang halusinasi nama field)
             elif k.lower() == "kecamatan": validated["namaKecamatan"] = v
             elif k.lower() == "kabupaten": validated["namaKabupaten"] = v
@@ -294,6 +333,7 @@ Respond ONLY with valid JSON. No markdown code blocks.
             elif k.lower() == "status": validated["status_sekolah"] = v
             elif k.lower() == "jumlah_siswa": validated["pd"] = v
             elif k.lower() == "jumlah_guru": validated["ptk"] = v
+            elif k.lower() == "nama_partial": validated["name_contains"] = v # Alias handling
             
         return validated
 
@@ -302,11 +342,26 @@ Respond ONLY with valid JSON. No markdown code blocks.
         # Menggunakan fungsi regex yang kuat dari utils.py
         filters = extract_filters_from_query(user_query)
         
+        # Extract limit if exists
+        requested_limit = extract_limit_from_query(user_query)
+        limit = requested_limit if requested_limit else 20
+        # Ensure limit doesn't exceed max config
+        limit = min(limit, Config.MAX_LIMIT)
+
+        # Extract sort preference
+        sort_pref = extract_sort_preference(user_query)
+
         # Basic intent detection
         query_lower = user_query.lower()
         intent = "search_school"
+
+        # Check for specific intents
         if any(x in query_lower for x in ["info", "detail", "profil"]):
             intent = "get_info"
+        elif any(x in query_lower for x in ["terbaik", "bagus", "unggulan", "favorit", "top", "rank"]):
+            intent = "ranking_query"
+        elif any(x in query_lower for x in ["berapa", "jumlah", "total", "hitung"]):
+            intent = "count_query"
         
         # Basic routing logic
         if len(filters) > 0:
@@ -320,7 +375,87 @@ Respond ONLY with valid JSON. No markdown code blocks.
             filters=filters,
             text_query=user_query,
             fields=Config.COMPREHENSIVE_FIELDS.get(intent, ["nama", "npsn"]),
-            limit=20,
-            sort=None,
+            limit=limit,
+            sort=sort_pref,
             confidence=0.5
         )
+
+    def _detect_special_intents(self, user_query: str) -> Optional[QueryPlan]:
+        """Detect edge cases: greetings, out of scope, unsupported features"""
+        q = user_query.lower()
+
+        # 1. Greetings
+        # Exact match or starts with greeting (e.g. "Halo admin")
+        clean_q = re.sub(r'[^\w\s]', '', q) # remove punct
+        tokens = clean_q.split()
+        if any(g in tokens for g in Config.GREETING_KEYWORDS):
+             return QueryPlan(intent="greeting", routing="none", filters={}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
+        # 2. Unsupported Features (Biaya, Ekskul, Jurusan specific)
+        for keyword in Config.UNSUPPORTED_FEATURES:
+            if keyword in q:
+                # Special check to ensure it's not a valid search context?
+                # For now, strict rejection for these keywords as per requirement.
+                return QueryPlan(intent="unknown_intent", routing="none", filters={"unsupported": keyword}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
+        # 3. Out of Scope Locations
+        for loc in Config.OUT_OF_SCOPE_LOCATIONS:
+            if loc in q:
+                return QueryPlan(intent="out_of_scope_location", routing="none", filters={"location": loc}, text_query=user_query, fields=[], limit=0, sort=None, confidence=1.0)
+
+        return None
+
+    def _is_query_relevant(self, query: str) -> bool:
+        """
+        Check if query contains at least one known domain keyword.
+        Constructs a whitelist from Config dynamically.
+        """
+        q = query.lower()
+
+        # 1. Gather all relevant terms
+        relevant_terms = set()
+
+        # Core domain terms
+        relevant_terms.update(["sekolah", "pendidikan", "murid", "guru", "siswa", "kelas", "data", "info", "cari", "list", "daftar", "tampilkan", "berapa", "jumlah"])
+
+        # Field Mapping keys (synonyms)
+        relevant_terms.update(k.lower() for k in Config.FIELD_MAPPING.keys())
+
+        # Value Mapping values (flattened)
+        for category in Config.VALUE_MAPPING.values():
+            for k, v in category.items():
+                if isinstance(k, re.Pattern): continue # Skip regex keys
+                relevant_terms.add(k.lower())
+                relevant_terms.add(v.lower())
+
+        # Query Intents (keywords)
+        for intents in Config.QUERY_INTENTS.values():
+            relevant_terms.update(i.lower() for i in intents)
+
+        # Unsupported & Out of Scope (because if user asks about them, it IS relevant to the domain, just not supported)
+        relevant_terms.update(k.lower() for k in Config.UNSUPPORTED_FEATURES)
+        relevant_terms.update(k.lower() for k in Config.OUT_OF_SCOPE_LOCATIONS)
+
+        # Greeting (handled by special intent, but safe to include)
+        relevant_terms.update(k.lower() for k in Config.GREETING_KEYWORDS)
+
+        # 2. Check overlap
+        # Tokenize simply
+        tokens = set(re.findall(r'\w+', q))
+
+        # Allow if any token matches a relevant term
+        # Use regex boundary check for short terms to avoid false positives (e.g. "sd" in "asdf")
+        # For multi-word terms, allow substring match if length > 3
+
+        for term in relevant_terms:
+            if len(term) < 4:
+                if re.search(rf"\b{re.escape(term)}\b", q):
+                    self.logger.info(f"Query '{q}' is relevant due to term (boundary): '{term}'")
+                    return True
+            else:
+                if term in q:
+                    self.logger.info(f"Query '{q}' is relevant due to term (substring): '{term}'")
+                    return True
+
+        self.logger.info(f"Query '{q}' is IRRELEVANT")
+        return False

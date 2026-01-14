@@ -2,9 +2,9 @@
 import time
 import logging
 from typing import Dict, List, Any, Optional, Tuple
-from enhanced_query_planner import QueryPlan, EnhancedQueryPlanner
-from config import Config
-from utils import build_qdrant_filter, normalize_query
+from app.enhanced_query_planner import QueryPlan, EnhancedQueryPlanner
+from app.config import Config
+from app.utils import build_qdrant_filter, normalize_query
 
 class EnhancedQueryExecutor:
     """
@@ -66,6 +66,12 @@ class EnhancedQueryExecutor:
             if results and len(results) > 1:
                 results = self._sort_results(results, plan, user_query)
             
+            # 6. Apply Limit
+            # Ensure we respect the requested limit after all filtering and sorting
+            if plan.limit and len(results) > plan.limit:
+                self.logger.info(f"Applying limit: trimming {len(results)} results to {plan.limit}")
+                results = results[:plan.limit]
+
             # Log Performance
             execution_time = time.time() - start_time
             self._log_performance(user_query, plan, len(results), execution_time)
@@ -93,6 +99,15 @@ class EnhancedQueryExecutor:
         for school in results:
             match = True
             for field, value in filters.items():
+                # Handle Special Keys
+                if field == "name_contains":
+                    # Partial match for name
+                    school_name = str(school.get("nama", "")).lower()
+                    target_name = str(value).lower()
+                    if target_name not in school_name:
+                        match = False
+                    continue
+
                 school_value = school.get(field)
                 
                 # Handle numeric operators (e.g., {"op": ">", "value": 500})
@@ -115,7 +130,12 @@ class EnhancedQueryExecutor:
                 
                 # Handle exact string match
                 else:
-                    if str(school_value).lower() != str(value).lower():
+                    # Skip if value is list (handled by build_qdrant_filter, but for manual filter we assume exact or skip)
+                    # If it is a list, check if school_value is IN that list
+                    if isinstance(value, list):
+                        if school_value not in value:
+                             match = False
+                    elif str(school_value).lower() != str(value).lower():
                         match = False
             
             if match:
@@ -289,8 +309,28 @@ class EnhancedQueryExecutor:
     # --- Sorting & Logging ---
 
     def _sort_results(self, results: List[Dict], plan: QueryPlan, user_query: str) -> List[Dict]:
+        # 1. Use Plan Sort if available (Highest Priority)
+        if plan.sort:
+            for s in plan.sort:
+                field = s.get('field')
+                order = s.get('order', 'desc')
+                reverse = (order.lower() == 'desc')
+
+                # Special handler for accreditation (A, B, C)
+                if field == 'akreditasi':
+                    return self._sort_by_accreditation(results, reverse=reverse)
+
+                # Default integer sort
+                try:
+                     results = sorted(results, key=lambda x: float(x.get(field, 0) or 0), reverse=reverse)
+                except Exception:
+                     # Fallback string sort
+                     results = sorted(results, key=lambda x: str(x.get(field, "")), reverse=reverse)
+            return results
+
         q_lower = user_query.lower()
         
+        # 2. Heuristic Sort based on Intent/Keywords
         if plan.intent == "ranking_query":
             return self._sort_by_quality(results)
         elif plan.intent == "count_query" or "siswa" in q_lower:
@@ -316,9 +356,10 @@ class EnhancedQueryExecutor:
         
         return sorted(results, key=score, reverse=True)
 
-    def _sort_by_accreditation(self, results: List[Dict]) -> List[Dict]:
+    def _sort_by_accreditation(self, results: List[Dict], reverse: bool = True) -> List[Dict]:
         order = {'A': 3, 'B': 2, 'C': 1}
-        return sorted(results, key=lambda x: order.get(x.get('akreditasi', ''), 0), reverse=True)
+        # If reverse=True (DESC), A(3) comes first. If reverse=False (ASC), C(1) or None(0) comes first.
+        return sorted(results, key=lambda x: order.get(x.get('akreditasi', ''), 0), reverse=reverse)
 
     def _log_performance(self, query: str, plan: QueryPlan, count: int, time_taken: float):
         stats = {

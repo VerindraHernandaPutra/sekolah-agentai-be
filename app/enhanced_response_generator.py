@@ -3,9 +3,9 @@ import time
 import logging
 import json
 from typing import List, Dict, Any, Optional
-from config import Config
-from enhanced_query_planner import QueryPlan
-from enhanced_llm_utils import EnhancedLLMClient
+from app.config import Config
+from app.enhanced_query_planner import QueryPlan
+from app.enhanced_llm_utils import EnhancedLLMClient
 
 class EnhancedResponseGenerator:
     """
@@ -31,11 +31,15 @@ class EnhancedResponseGenerator:
         """
         start_time = time.time()
         
-        # 1. Handle No Results
+        # 1. Handle Special Intents (No Data Needed)
+        if plan.intent in ["greeting", "unknown_intent", "out_of_scope_location", "irrelevant_query"]:
+            return self._generate_special_response(plan)
+
+        # 2. Handle No Results
         if not schools:
             return self._generate_no_results(user_query, plan)
         
-        # 2. Tentukan Tipe Tampilan & Siapkan Data
+        # 3. Tentukan Tipe Tampilan & Siapkan Data
         try:
             # Bersihkan data untuk frontend (hapus field internal vector, score, dll jika perlu)
             cleaned_data = self._clean_data_for_frontend(schools)
@@ -97,26 +101,26 @@ class EnhancedResponseGenerator:
             filter_str = ", ".join([f"{k}: {v}" for k,v in plan.filters.items()])
 
             prompt = f"""
-Kamu adalah Asisten Sales Cerdas untuk PT Telkom.
-Tugas: Berikan ringkasan eksekutif singkat (maksimal 3 kalimat) dalam Bahasa Indonesia yang natural untuk menjawab user.
+You are a helpful School Database Assistant.
+Task: Provide a neutral, factual summary (max 2 sentences) in Indonesian based ONLY on the provided data.
 
 User Query: "{user_query}"
-Data Ditemukan: {total} sekolah.
-Statistik: {negeri} Negeri, {swasta} Swasta.
-Top Result: {top_names_str}, dll.
-Filter Aktif: {filter_str}
+Data Found: {total} schools.
+Stats: {negeri} Public (Negeri), {swasta} Private (Swasta).
+Top Results: {top_names_str}, etc.
+Active Filters: {filter_str}
 
-Panduan:
-1. Langsung jawab intinya. Contoh: "Berikut adalah 20 sekolah negeri di Sidoarjo yang Anda cari. Sebagian besar berlokasi di..."
-2. Jangan sebutkan "Berikut adalah JSON" atau hal teknis.
-3. Berikan insight singkat jika ada (misal: "Sekolah-sekolah ini memiliki potensi tinggi...").
-4. Jangan buat list/bullet points, cukup paragraf pendek. Data detail sudah ada di tabel.
+Guidelines:
+1. Be direct and consistent. Example: "Berikut adalah {total} sekolah yang sesuai dengan pencarian Anda."
+2. Do NOT add roles, opinions, or insights about "sales", "internet potential", or "Telkom".
+3. Do NOT mention specific locations unless they are in the Active Filters.
+4. Keep it professional and concise.
 
-Jawab:
+Answer:
 """
             narrative = self.llm_client.call_llm(
                 prompt, 
-                temperature=0.3, 
+                temperature=Config.LLM_TEMPERATURES["response_generation"],
                 use_streaming=True # Streaming oke untuk narasi pendek
             )
             
@@ -142,20 +146,20 @@ Jawab:
             """
 
             prompt = f"""
-Kamu adalah Asisten Sales Telkom.
-Tugas: Jelaskan profil singkat sekolah ini kepada sales dalam 2-3 kalimat persuasif.
+You are a helpful School Database Assistant.
+Task: Provide a neutral, factual summary (max 2 sentences) in Indonesian based ONLY on the provided data.
 
 Data Sekolah:
 {context_str}
 
 Panduan:
-1. Highlight potensi sekolah (jumlah siswa besar = potensi internet besar).
-2. Gunakan bahasa profesional dan natural.
-3. Jangan mengulang semua data spesifik karena user sudah melihat datanya di layar.
+1. Provide a brief overview of the school.
+2. Use professional and neutral language.
+3. Do NOT make up facts or mention "sales potential".
 
 Jawab:
 """
-            narrative = self.llm_client.call_llm(prompt, temperature=0.4, use_streaming=True)
+            narrative = self.llm_client.call_llm(prompt, temperature=Config.LLM_TEMPERATURES["response_generation"], use_streaming=True)
             return narrative.strip() if narrative else f"Berikut adalah profil detail dari {school.get('nama')}."
 
         except Exception:
@@ -193,6 +197,32 @@ Jawab:
             
             cleaned_list.append(new_s)
         return cleaned_list
+
+    def _generate_special_response(self, plan: QueryPlan) -> str:
+        """Handle greetings and refusals"""
+        narrative = ""
+
+        if plan.intent == "greeting":
+            narrative = "Halo! Saya adalah Asisten Database Sekolah Sidoarjo. Saya bisa membantu Anda mencari informasi tentang SD, SMP, SMA, dan SMK di wilayah Sidoarjo. Silakan tanya saya tentang lokasi, status, atau jumlah siswa sekolah!"
+
+        elif plan.intent == "out_of_scope_location":
+            loc = plan.filters.get("location", "luar Sidoarjo")
+            narrative = f"Mohon maaf, cakupan data saya saat ini HANYA terbatas pada sekolah-sekolah di Kabupaten Sidoarjo. Saya tidak memiliki data sekolah di {loc.title()}."
+
+        elif plan.intent == "unknown_intent":
+            keyword = plan.filters.get("unsupported", "tersebut")
+            narrative = f"Mohon maaf, database saya hanya mencakup data pokok pendidikan (Dapodik) seperti profil, alamat, jumlah siswa/guru, dan fasilitas dasar. Saya TIDAK memiliki data detail mengenai {keyword}."
+
+        elif plan.intent == "irrelevant_query":
+            narrative = "Mohon maaf, saya tidak mengerti permintaan Anda. Saya adalah asisten data sekolah Sidoarjo. Silakan tanya tentang daftar sekolah, lokasi, statistik siswa/guru, atau profil sekolah tertentu."
+
+        response = {
+            "type": "none",
+            "narrative": narrative,
+            "data": [],
+            "meta": {"intent": plan.intent}
+        }
+        return json.dumps(response)
 
     def _generate_no_results(self, query: str, plan: QueryPlan) -> str:
         """Return JSON structure for empty state"""
